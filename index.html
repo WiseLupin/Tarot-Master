@@ -599,7 +599,7 @@ function editorHtml(c) {
     ${EDITABLE.map(f => `<div class="field">
       <label for="f-${f.k}">${f.t}${f.list ? " <span style='text-transform:none;letter-spacing:0'>· 한 줄에 하나</span>" : ""}</label>
       ${f.sub ? `<span class="sub">${f.sub}</span>` : ""}
-      <textarea id="f-${f.k}" class="${f.cls || ""}" rows="${f.rows || 3}" data-f="${f.k}"
+      <textarea id="f-${f.k}" class="${f.cls || ""}" rows="${f.rows || 3}" data-field="${f.k}"
         placeholder="${f.ph || "비워두면 이 항목은 표시되지 않습니다"}">${esc(S.draft.v[f.k])}</textarea>
     </div>`).join("")}
     <div class="editbar">
@@ -616,7 +616,7 @@ function startEdit(id) {
 }
 function collectDraft(root) {
   if (!S.draft) return;
-  root.querySelectorAll("[data-f]").forEach(t => { S.draft.v[t.dataset.f] = t.value; });
+  root.querySelectorAll("[data-field]").forEach(t => { S.draft.v[t.dataset.field] = t.value; });
 }
 function draftChanged() {
   if (!S.draft) return false;
@@ -672,7 +672,7 @@ function wireDict(root) {
   if (inp) {
     inp.oninput = e => { S.q = e.target.value; const p = e.target.selectionStart; renderDict(); const n = $("#dq"); n.focus(); n.setSelectionRange(p, p); };
   }
-  root.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.filter = b.dataset.f; renderDict(); });
+  root.querySelectorAll("button.chip[data-f]").forEach(b => b.onclick = () => { S.filter = b.dataset.f; renderDict(); });
   wireCommon(root);
 }
 
@@ -698,7 +698,7 @@ function wireCommon(root) {
     renderAll();
     const d = document.querySelector(".panel:not([hidden]) .detail"); if (d) d.scrollTop = 0;
   });
-  root.querySelectorAll("[data-f]").forEach(t => t.oninput = e => { if (S.draft) S.draft.v[t.dataset.f] = e.target.value; });
+  root.querySelectorAll("[data-field]").forEach(t => t.oninput = e => { if (S.draft) S.draft.v[t.dataset.field] = e.target.value; });
   root.querySelectorAll("[data-save]").forEach(b => b.onclick = () => { collectDraft(root); saveEdit(); });
   root.querySelectorAll("[data-cancel]").forEach(b => b.onclick = () => { if (!leaveEdit()) return; renderAll(); });
   root.querySelectorAll("[data-revert]").forEach(b => b.onclick = () => revert(b.dataset.revert));
@@ -1225,6 +1225,7 @@ window.addEventListener("beforeunload", e => {
   try {
     DB = await window.claude.use("db");
     if (DB) {
+      let firstSync = true;
       DB.collection("cards").onSnapshot(snap => {
         if (S.editing) return;               // never yank text out from under the editor
         const next = {}, keys = EDITABLE.map(f => f.k);
@@ -1234,6 +1235,16 @@ window.addEventListener("beforeunload", e => {
           for (const k of keys) if (k in raw) clean[k] = raw[k];
           if (Object.keys(clean).length) next[d.id] = clean;
         });
+        if (firstSync) {
+          // first contact: anything this browser has but the server doesn't is
+          // an edit made offline (or before sign-in). Push it up, never drop it.
+          firstSync = false;
+          const local = Object.keys(OV).filter(id => !next[id]);
+          local.forEach(id => {
+            next[id] = OV[id];
+            DB.doc("cards/" + id).set(Object.assign({ _at: Date.now() }, OV[id])).catch(() => { });
+          });
+        }
         if (JSON.stringify(next) === JSON.stringify(OV)) return;
         OV = next; saveOvLocal(); rebuild(); renderAll();
       }, () => { });
