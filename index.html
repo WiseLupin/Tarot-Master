@@ -105,9 +105,18 @@ main{max-width:1320px;margin:0 auto;padding:22px 20px 72px}
 .bar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .search{flex:1 1 210px;min-width:0;display:flex;align-items:center;gap:8px;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r);padding:0 12px;height:38px;box-shadow:var(--shadow)}
-.search input{flex:1;min-width:0;border:none;background:none;outline:none;font-size:14px}
+.search input{flex:1;min-width:0;border:none;background:none;outline:none;font-size:14px;appearance:none}
+.search input::-webkit-search-cancel-button,
+.search input::-webkit-search-decoration{appearance:none;display:none}
 .search svg{color:var(--faint);flex-shrink:0}
 .chips{display:flex;gap:5px;flex-wrap:wrap}
+@media(max-width:660px){
+  /* keep the filters to one swipeable line so matches land right under the box */
+  .bar{gap:7px;margin-bottom:12px}
+  .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -14px;padding:1px 14px}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{flex-shrink:0;padding:6px 11px}
+}
 .chip{padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);
   font-size:12.5px;font-weight:500;color:var(--muted);transition:.14s}
 .chip:hover{border-color:var(--accent-line);color:var(--ink)}
@@ -513,37 +522,84 @@ function starSvg(on) {
 const FILTERS = [["all", "전체"], ["major", "메이저"], ["cups", "컵"], ["wands", "완드"],
 ["swords", "소드"], ["pentacles", "펜타클"], ["court", "코트"], ["fav", "★ 즐겨찾기"]];
 
-function matches(c, f, q) {
-  if (f === "major" && c.group !== "major") return false;
-  if (f === "court" && c.group !== "court") return false;
-  if (["cups", "wands", "swords", "pentacles"].includes(f) && c.suit !== f) return false;
-  if (f === "fav" && !S.favs.has(c.id)) return false;
-  if (!q) return true;
-  const hay = [c.name, c.en, label(c), ...(c.keywords || []), ...(c.points || []), c.summary, c.memo]
-    .filter(Boolean).join(" ").toLowerCase();
-  return hay.includes(q.toLowerCase());
+/* -1 = no match. Otherwise the lower the number the closer the match, so a
+   search for 탑 lists 16.탑 before cards that merely mention a tower. */
+function scoreCard(c, f, q) {
+  if (f === "major" && c.group !== "major") return -1;
+  if (f === "court" && c.group !== "court") return -1;
+  if (["cups", "wands", "swords", "pentacles"].includes(f) && c.suit !== f) return -1;
+  if (f === "fav" && !S.favs.has(c.id)) return -1;
+  if (!q) return 0;
+  const n = q.toLowerCase().replace(/\s+/g, "");
+  const has = s => (s || "").toLowerCase().replace(/\s+/g, "").includes(n);
+  if (has(label(c)) || has(c.en)) return 0;
+  if ((c.keywords || []).some(has)) return 1;
+  if ((c.points || []).some(has) || has(c.memo)) return 2;
+  if (has(c.summary) || has(c.study) || has(c.general) || has(c.story) || has(c.linked)) return 3;
+  return -1;
 }
+function matches(c, f, q) { return scoreCard(c, f, q) >= 0; }
 
+/* The search box is built ONCE and never replaced. Re-creating an input while
+   the user is typing breaks Hangul composition — 컵 comes out as ㅋㅓㅂ. */
 function renderDict() {
-  const q = S.q.trim();
-  const list = CARDS.filter(c => matches(c, S.filter, q));
+  const p = $("#p-dict");
+  if (!p.dataset.built) {
+    p.innerHTML = `
+      <div class="bar">
+        <label class="search">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="dq" type="search" autocomplete="off" placeholder="카드 이름·키워드·포인트 검색 (예: 배신, 컵, Tower)">
+          <button class="iconbtn" id="dclear" aria-label="검색어 지우기" hidden style="width:24px;height:24px">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          <span class="lbl" id="dcount"></span>
+        </label>
+        <div class="chips" id="dchips"></div>
+      </div>
+      <div class="split"><div id="dgrid"></div><div class="detail" id="ddetail"></div></div>`;
+    p.dataset.built = "1";
+    const inp = $("#dq");
+    inp.value = S.q;
+    // only the results redraw as you type — the input element itself stays put
+    inp.addEventListener("input", () => { S.q = inp.value; afterQueryChange(); });
+    inp.addEventListener("search", () => { S.q = inp.value; afterQueryChange(); });
+    $("#dclear").onclick = () => { inp.value = ""; S.q = ""; afterQueryChange(); inp.focus(); };
+  }
+  renderChips(); renderGrid(); renderDetailPanel();
+}
+function afterQueryChange() {
+  renderChips(); renderGrid();
+  // bring the matches back up under the search box instead of leaving them
+  // far below wherever the list happened to be scrolled to
+  if (window.scrollY > 4) window.scrollTo({ top: 0, behavior: "auto" });
+}
+function renderChips() {
   const counts = Object.fromEntries(FILTERS.map(([k]) => [k, CARDS.filter(c => matches(c, k, "")).length]));
-  $("#p-dict").innerHTML = `
-    <div class="bar">
-      <label class="search">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input id="dq" placeholder="카드 이름·키워드·포인트 검색 (예: 배신, 실망, Cups)" value="${esc(S.q)}">
-        <span class="lbl">${list.length}</span>
-      </label>
-      <div class="chips">${FILTERS.map(([k, t]) =>
-    `<button class="chip" aria-pressed="${S.filter === k}" data-f="${k}">${t}<span class="cnt">${counts[k]}</span></button>`).join("")}</div>
-    </div>
-    <div class="split">
-      <div>${list.length ? `<div class="grid">${list.map(c => thumb(c, { current: S.sel === c.id })).join("")}</div>`
-      : `<div class="empty"><b>찾는 카드가 없어요</b><span>검색어나 필터를 바꿔보세요.</span></div>`}</div>
-      <div class="detail" data-empty="${S.sel ? 0 : 1}">${detailHtml(S.sel)}</div>
-    </div>`;
-  wireDict($("#p-dict"));
+  const box = $("#dchips");
+  box.innerHTML = FILTERS.map(([k, t]) =>
+    `<button class="chip" aria-pressed="${S.filter === k}" data-f="${k}">${t}<span class="cnt">${counts[k]}</span></button>`).join("");
+  box.querySelectorAll("button.chip[data-f]").forEach(b => b.onclick = () => {
+    S.filter = b.dataset.f; renderChips(); renderGrid();
+    if (window.scrollY > 4) window.scrollTo({ top: 0, behavior: "auto" });
+  });
+}
+function renderGrid() {
+  const q = S.q.trim();
+  const list = CARDS.map((c, i) => ({ c, i, s: scoreCard(c, S.filter, q) }))
+    .filter(x => x.s >= 0).sort((a, b) => a.s - b.s || a.i - b.i).map(x => x.c);
+  $("#dcount").textContent = list.length;
+  const cl = $("#dclear"); if (cl) cl.hidden = !S.q;
+  const g = $("#dgrid");
+  g.innerHTML = list.length
+    ? `<div class="grid">${list.map(c => thumb(c, { current: S.sel === c.id })).join("")}</div>`
+    : `<div class="empty"><b>찾는 카드가 없어요</b><span>검색어나 필터를 바꿔보세요.</span></div>`;
+  wireCommon(g);
+}
+function renderDetailPanel() {
+  const d = $("#ddetail");
+  d.dataset.empty = S.sel ? "0" : "1";
+  d.innerHTML = detailHtml(S.sel);
+  wireCommon(d);
 }
 
 function detailHtml(id) {
@@ -665,15 +721,6 @@ function linkChips(c) {
     }
   }
   return out.join("");
-}
-
-function wireDict(root) {
-  const inp = root.querySelector("#dq");
-  if (inp) {
-    inp.oninput = e => { S.q = e.target.value; const p = e.target.selectionStart; renderDict(); const n = $("#dq"); n.focus(); n.setSelectionRange(p, p); };
-  }
-  root.querySelectorAll("button.chip[data-f]").forEach(b => b.onclick = () => { S.filter = b.dataset.f; renderDict(); });
-  wireCommon(root);
 }
 
 function wireCommon(root) {
